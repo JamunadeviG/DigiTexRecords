@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { useDocuments } from '../context/DocumentContext';
-import { Search, MapPin, FileText, User, ChevronRight, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Search, MapPin, FileText, ChevronRight, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export const PublicSearch: React.FC = () => {
     const { t } = useLanguage();
-    const { searchDocuments, getChainForDocument } = useDocuments();
+    const { documents, searchDocuments, getChainForDocument } = useDocuments();
     const [query, setQuery] = useState('');
     const [hasSearched, setHasSearched] = useState(false);
+    const [showOcrDocId, setShowOcrDocId] = useState<string | null>(null);
     const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
 
     const results = query ? searchDocuments(query) : [];
@@ -51,7 +52,11 @@ export const PublicSearch: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Results List */}
                 <div className="lg:col-span-1 space-y-4">
-                    {hasSearched && results.length === 0 && (
+                    {documents.length === 0 ? (
+                        <div className="text-center p-8 bg-orange-50/50 rounded-lg border border-orange-100">
+                            <p className="text-orange-800 font-medium">No documents available. Staff must upload documents.</p>
+                        </div>
+                    ) : hasSearched && results.length === 0 && (
                         <div className="text-center p-8 bg-gray-50 rounded-lg">
                             <p className="text-gray-500">No documents found matching "{query}"</p>
                         </div>
@@ -60,18 +65,64 @@ export const PublicSearch: React.FC = () => {
                     {results.map(doc => (
                         <div
                             key={doc.id}
-                            onClick={() => setSelectedDocId(doc.id)}
-                            className={`bg-white p-4 rounded-lg shadow-sm border border-gray-100 cursor-pointer transition-all hover:shadow-md ${selectedDocId === doc.id ? 'ring-2 ring-tn-orange border-transparent' : ''}`}
+                            className={`bg-white p-4 rounded-lg shadow-sm border border-gray-100 transition-all hover:shadow-md ${selectedDocId === doc.id ? 'ring-2 ring-tn-orange border-transparent' : ''}`}
                         >
-                            <div className="flex justify-between items-start mb-2">
-                                <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md font-medium">{doc.category}</span>
-                                {doc.isVerified && <ShieldCheck size={16} className="text-tn-green" />}
+                            <div
+                                className="cursor-pointer"
+                                onClick={() => setSelectedDocId(doc.id)}
+                            >
+                                <div className="flex justify-between items-start mb-2">
+                                    <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md font-medium">{doc.category}</span>
+                                    {doc.isVerified && <ShieldCheck size={16} className="text-tn-green" />}
+                                </div>
+                                <h3 className="font-semibold text-gray-800">{doc.ownerName}</h3>
+                                <p className="text-sm text-gray-500 mb-2">{doc.docNumber}</p>
+                                <div className="flex items-center gap-2 text-xs text-gray-400 mb-3">
+                                    <MapPin size={12} /> {doc.location}
+                                </div>
                             </div>
-                            <h3 className="font-semibold text-gray-800">{doc.ownerName}</h3>
-                            <p className="text-sm text-gray-500 mb-2">{doc.docNumber}</p>
-                            <div className="flex items-center gap-2 text-xs text-gray-400">
-                                <MapPin size={12} /> {doc.location}
+
+                            {/* Action Buttons */}
+                            <div className="flex gap-2 border-t pt-3 mt-1">
+                                {doc.originalFileUrl && (
+                                    <a
+                                        href={doc.originalFileUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex-1 text-center bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs py-2 rounded transition-colors"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        View Original
+                                    </a>
+                                )}
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setShowOcrDocId(showOcrDocId === doc.id ? null : doc.id);
+                                    }}
+                                    className="flex-1 text-center border border-gray-200 hover:bg-gray-50 text-gray-600 text-xs py-2 rounded transition-colors"
+                                >
+                                    {showOcrDocId === doc.id ? 'Hide Data' : 'OCR Data'}
+                                </button>
                             </div>
+
+                            {/* Collapsible OCR Data */}
+                            {showOcrDocId === doc.id && doc.ocrData && (
+                                <div className="mt-3 p-3 bg-slate-50 rounded text-xs font-mono overflow-auto max-h-40 border border-slate-200">
+                                    <div className="mb-2 text-xs font-semibold text-gray-500 flex justify-between">
+                                        <span>Extracted Metadata</span>
+                                        <span className={doc.ocrConfidence && doc.ocrConfidence > 80 ? 'text-green-600' : 'text-orange-500'}>
+                                            {Math.round(doc.ocrConfidence || 0)}% Conf
+                                        </span>
+                                    </div>
+                                    <pre className="whitespace-pre-wrap">{JSON.stringify(doc.ocrData.fields, null, 2)}</pre>
+                                    <div className="mt-2 pt-2 border-t border-slate-200">
+                                        <div className="font-semibold text-gray-500 mb-1">Full Text Snippet:</div>
+                                        <div className="text-gray-400 italic line-clamp-3">{doc.ocrData.text}</div>
+                                    </div>
+                                </div>
+                            )}
+
                         </div>
                     ))}
                 </div>
@@ -140,6 +191,20 @@ export const PublicSearch: React.FC = () => {
                                                     </div>
                                                 )}
                                             </div>
+
+                                            {/* Link to Original for Chain Nodes */}
+                                            {node.originalFileUrl && (
+                                                <div className="mt-4 pt-3 border-t border-gray-200/50">
+                                                    <a
+                                                        href={node.originalFileUrl}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-xs text-tn-blue hover:underline flex items-center gap-1"
+                                                    >
+                                                        <FileText size={12} /> View Original Document Source
+                                                    </a>
+                                                </div>
+                                            )}
 
                                         </div>
                                     </motion.div>

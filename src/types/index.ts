@@ -35,6 +35,21 @@ export interface LandDocument {
     timestamp: string;
     uploadedBy?: string; // User ID
     ocrConfidence?: number;
+    originalFileUrl?: string; // Blob URL to actual file
+    preprocessedFileUrl?: string; // Blob URL to enhanced image
+    ocrData?: {
+        text?: string;
+        confidence?: number;
+        fields?: Record<string, any>;
+    };
+    integrityCheck?: {
+        hasOriginal: boolean;
+        hasOcr: boolean;
+        isValid: boolean;
+    };
+    // Categorization
+    categoryConfidence?: number;
+    categoryKeywords?: string[];
 }
 
 export interface OwnershipChainNode {

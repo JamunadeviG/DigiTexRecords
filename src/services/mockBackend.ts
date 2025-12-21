@@ -1,11 +1,6 @@
 import type { User, LandDocument } from '../types';
 
 // In-memory storage simulation
-const LOCAL_STORAGE_KEYS = {
-    USERS: 'land_registry_users',
-    DOCUMENTS: 'land_registry_documents',
-    SESSION: 'land_registry_session'
-};
 
 // Helper to simulate network delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -16,9 +11,7 @@ class MockBackendService {
 
     constructor() {
         this.loadFromStorage();
-        if (this.users.length === 0) {
-            this.seedData();
-        }
+        // No seed data - start empty
     }
 
     private loadFromStorage() {
@@ -35,26 +28,6 @@ class MockBackendService {
         }
     }
 
-    private seedData() {
-        // Seed some documents
-        this.documents = [
-            {
-                id: '1',
-                docNumber: 'DOC-2023-001',
-                category: 'Sale Deed',
-                ownerName: 'Ramanathan S',
-                previousOwnerName: 'Muthu Kumar',
-                surveyNumber: '123/4A',
-                location: 'Madurai North',
-                date: '2023-05-15',
-                isVerified: true,
-                timestamp: new Date().toISOString(),
-                storageLocation: { shelf: 'A1', rack: 'R1' },
-                uploadedBy: 'staff-1'
-            },
-            // ... more mock docs
-        ];
-    }
 
     // --- Auth Endpoints ---
 

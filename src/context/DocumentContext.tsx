@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import type { LandDocument } from '../types';
 
 interface DocumentContextType {
@@ -8,52 +8,10 @@ interface DocumentContextType {
     getChainForDocument: (docId: string) => LandDocument[];
 }
 
-const initialDocuments: LandDocument[] = [
-    {
-        id: '1',
-        docNumber: 'DOC-2023-001',
-        category: 'Sale Deed',
-        ownerName: 'Ramanathan S',
-        previousOwnerName: 'Muthu Kumar',
-        surveyNumber: '123/4A',
-        location: 'Madurai North',
-        date: '2023-05-15',
-        isVerified: true,
-        timestamp: new Date().toISOString(),
-        storageLocation: { shelf: 'A1', rack: 'R1' }
-    },
-    {
-        id: '2',
-        docNumber: 'DOC-2015-892',
-        category: 'Sale Deed',
-        ownerName: 'Muthu Kumar',
-        previousOwnerName: 'Subramaniam',
-        surveyNumber: '123/4A',
-        location: 'Madurai North',
-        date: '2015-02-10',
-        isVerified: true,
-        timestamp: new Date().toISOString(),
-        storageLocation: { shelf: 'B2', rack: 'R5' }
-    },
-    {
-        id: '3',
-        docNumber: 'DOC-2010-101',
-        category: 'Patta',
-        ownerName: 'Subramaniam',
-        previousOwnerName: '', // First known
-        surveyNumber: '123/4A',
-        location: 'Madurai North',
-        date: '2010-01-01',
-        isVerified: true,
-        timestamp: new Date().toISOString(),
-        storageLocation: { shelf: 'C3', rack: 'R9' }
-    }
-];
-
 const DocumentContext = createContext<DocumentContextType | undefined>(undefined);
 
 export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [documents, setDocuments] = useState<LandDocument[]>(initialDocuments);
+    const [documents, setDocuments] = useState<LandDocument[]>([]);
 
     const addDocument = (doc: LandDocument) => {
         setDocuments(prev => [doc, ...prev]);
@@ -62,9 +20,14 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const searchDocuments = (query: string) => {
         const lowerQuery = query.toLowerCase();
         return documents.filter(doc =>
-            doc.ownerName.toLowerCase().includes(lowerQuery) ||
-            doc.docNumber.toLowerCase().includes(lowerQuery) ||
-            doc.surveyNumber.includes(query)
+            doc.ownerName?.toLowerCase().includes(lowerQuery) ||
+            doc.docNumber?.toLowerCase().includes(lowerQuery) ||
+            doc.surveyNumber?.includes(query) ||
+            // Fuzzy search in OCR data
+            (doc.ocrData?.text && doc.ocrData.text.toLowerCase().includes(lowerQuery)) ||
+            (doc.ocrData?.fields && Object.values(doc.ocrData.fields).some(val =>
+                typeof val === 'string' && val.toLowerCase().includes(lowerQuery)
+            ))
         );
     };
 
