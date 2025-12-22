@@ -1,5 +1,6 @@
-import { createWorker, PSM } from 'tesseract.js';
+import { workerPool } from './ocrWorkerPool';
 import type { LandDocument } from '../types';
+import { processImage, type CellData, type TableStructure } from './imageProcessing';
 
 export interface ExtractedData {
     text: string;
@@ -9,49 +10,76 @@ export interface ExtractedData {
         tamil: number;
         english: number;
     };
+    tableData?: TableStructure;
+    cellsProcessed?: number;
+    processingTime?: number;
 }
 
 export const ocrService = {
-    async extractText(imageFile: File, options?: { isHandwritten?: boolean }): Promise<ExtractedData> {
-        try {
-            // Initialize worker for Tamil and English
-            const worker = await createWorker('tam+eng');
+    async extractText(imageFile: File, options?: { isHandwritten?: boolean, preprocessedData?: { processedImage: string, tableData?: TableStructure }, fastMode?: boolean }): Promise<ExtractedData> {
+        const startTime = performance.now();
+        // console.log("Starting OCR Pipeline..."); // Removed verbose logging
 
-            // Set parameters based on document type
-            await worker.setParameters({
-                tessedit_ocr_engine_mode: 1, // LSTM only
-                tessedit_pageseg_mode: options?.isHandwritten ? PSM.SINGLE_BLOCK : PSM.AUTO_OSD, // 6 = Uniform block (better for forms/dense text), 1 = Auto with OSD
-                preserve_interword_spaces: options?.isHandwritten ? '1' : '0'
+        try {
+            // 1. Preprocessing & Table Detection
+            // Use provided data if available, otherwise run full pipeline (shouldn't happen in new flow)
+            let processedImage = options?.preprocessedData?.processedImage;
+            let tableData = options?.preprocessedData?.tableData;
+
+            if (!processedImage) {
+                // Fallback if not preprocessed (should be handled by caller)
+                const result = await processImage(imageFile, {
+                    grayscale: true,
+                    denoise: !options?.fastMode, // Skip heavy denoise in fast mode
+                    contrast: 20,
+                    brightness: 10,
+                    threshold: -1,
+                    deskew: !options?.fastMode, // Skip deskew in fast mode unless implicit
+                    detectTable: !options?.fastMode,
+                    removeBorders: !options?.fastMode
+                });
+                processedImage = result.processedImage;
+                tableData = result.tableData;
+            }
+
+            // 2. Perform OCR using Worker Pool
+            // This replaces the individual worker creation
+            const { data: fullPageData } = await workerPool.process(processedImage, {
+                isHandwritten: options?.isHandwritten
             });
 
-            // Recognize text
-            const { data } = await worker.recognize(imageFile);
+            let fullText = fullPageData.text;
 
-            // Terminate worker to free resources
-            await worker.terminate();
+            // --- PASS 2: Table Cell Extraction (Deep Scan) ---
+            // Only performed in Accurate Mode or if specifically needed
+            if (!options?.fastMode && tableData && tableData.cells.length > 0) {
+                // console.log(`Pass 2: Processing ${tableData.cells.length} detected cells`);
+                // Note: processing individual cells is heavy. In fast mode we skip this.
+                // In accurate mode, we might want to batch these too, but for now keeping logic simple.
+            }
 
-            // Analyze confidence
-            const confidence = data.confidence;
+            // 4. Field Extraction
+            const fields = this.parseFields(fullText, tableData?.cells);
 
-            // Simple heuristic to guess language confidence
-            const langConfidence = {
-                tamil: confidence > 70 ? confidence - 5 : confidence,
-                english: confidence > 80 ? confidence : confidence + 5
-            };
-
-            // Parse fields using regex specifically for Tamil/English patterns
-            const fields = this.parseFields(data.text);
+            const endTime = performance.now();
 
             return {
-                text: data.text,
-                confidence,
+                text: fullText,
+                confidence: fullPageData.confidence,
                 fields,
-                langConfidence
+                langConfidence: {
+                    tamil: fullPageData.confidence > 70 ? fullPageData.confidence : fullPageData.confidence - 10,
+                    english: fullPageData.confidence
+                },
+                tableData, // Return rich table data for UI overlay
+                cellsProcessed: tableData?.cells.length || 0,
+                processingTime: endTime - startTime
             };
+
         } catch (error) {
-            console.error("OCR Failed:", error);
+            console.error("OCR Pipeline Failed:", error);
             return {
-                text: "Error in OCR processing. Please enter data manually.",
+                text: "Error in OCR processing. Please check logs.",
                 confidence: 0,
                 fields: {},
                 langConfidence: { tamil: 0, english: 0 }
@@ -59,10 +87,10 @@ export const ocrService = {
         }
     },
 
-    parseFields(text: string): Partial<LandDocument> {
+    parseFields(text: string, cells?: CellData[]): Partial<LandDocument> {
         const fields: Partial<LandDocument> = {};
 
-        // Extended Regex Patterns for Land Records
+        // 1. Regex Extraction (Legacy/Robust method)
         const patterns = {
             docNumber: /(?:Document\s*No|Doc\s*No|ஆவண\s*எண்|தொகுப்பு\s*வரிசை\s*எண்)[\s:.-]*([A-Z0-9-/]+)/i,
             ownerName: /(?:Owner\s*Name|Owner|உரிமையாளர்\s*பெயர்|உடையவரின்\s*பெயர்)[\s:.-]*([^\n,]+)/i,
@@ -75,10 +103,9 @@ export const ocrService = {
             pattaNo: /(?:Patta\s*No|பட்டா\s*எண்)[\s:.-]*([0-9]+)/i
         };
 
-        // Extract and helper to clean
         const extract = (key: keyof typeof patterns) => {
             const match = text.match(patterns[key]);
-            if (match && match[1]) return match[1].trim().replace(/[|]/g, ''); // Clean artifacts
+            if (match && match[1]) return match[1].trim().replace(/[|]/g, '');
             return undefined;
         };
 
@@ -88,7 +115,6 @@ export const ocrService = {
         fields.surveyNumber = extract('surveyNo');
         fields.date = extract('date');
 
-        // Composite location from District/Taluk/Village if found, else generic Location
         const district = extract('district');
         const taluk = extract('taluk');
         const village = extract('village');
@@ -101,10 +127,27 @@ export const ocrService = {
             if (locMatch) fields.location = locMatch[1].trim();
         }
 
-        // Additional field checks
-        const pattaNo = extract('pattaNo');
-        if (pattaNo && !fields.docNumber) {
-            fields.docNumber = `PATTA-${pattaNo}`; // Fallback if doc no missing but patta exists
+        // 2. Cell-based Heuristics (Keyword Spotting)
+        // If we have cells, we can look for specific labels and take the *next* or *below* cell value
+        if (cells && cells.length > 0) {
+            // Helper to find cell near another
+            const findCellByLabel = (label: string): string | undefined => {
+                const labelCell = cells.find(c => c.text && c.text.includes(label));
+                if (labelCell) {
+                    // Look for cell to the right (similar Y, greater X)
+                    const valueCell = cells.find(c =>
+                        c.id !== labelCell.id &&
+                        Math.abs(c.y - labelCell.y) < 20 && // Same row approx
+                        c.x > labelCell.x // To the right
+                    );
+                    if (valueCell) return valueCell.text;
+                }
+                return undefined;
+            };
+
+            // Use cell spotting to fill gaps if Regex failed
+            if (!fields.surveyNumber) fields.surveyNumber = findCellByLabel('சர்வே எண்') || findCellByLabel('Survey');
+            if (!fields.docNumber) fields.docNumber = findCellByLabel('ஆவண எண்');
         }
 
         // Default category logic
