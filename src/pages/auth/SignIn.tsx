@@ -29,7 +29,7 @@ export const SignIn: React.FC = () => {
                     <div className="w-16 h-16 bg-tn-orange/10 rounded-full flex items-center justify-center mx-auto mb-4">
                         <Shield className="w-8 h-8 text-tn-orange" />
                     </div>
-                    <h2 className="text-3xl font-extrabold text-gray-900">{t('btn.login')}</h2>
+                    <h2 className="text-3xl font-extrabold text-gray-900">Unified Login</h2>
                     <p className="mt-2 text-sm text-gray-600">
                         Access the Tamil Nadu Land Registry
                     </p>
@@ -91,9 +91,10 @@ export const SignIn: React.FC = () => {
                         </Link>
                     </div>
 
-                    <div className="mt-4 p-4 bg-blue-50 rounded-md text-xs text-blue-700">
-                        <p className="font-bold">Demo Credentials:</p>
-                        <p>Staff: staff@tn.gov.in / admin123</p>
+                    <div className="mt-4 text-center">
+                        <span className="px-3 py-1 bg-gray-100 text-gray-600 text-xs rounded-full border border-gray-200">
+                            Unified Portal Login for Staff & Citizens
+                        </span>
                     </div>
                 </form>
             </div>

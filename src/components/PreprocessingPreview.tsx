@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { ZoomIn, ZoomOut, Maximize2, Grid, Layers, CheckCircle, RefreshCcw, Activity } from 'lucide-react';
 
 interface PreprocessingPreviewProps {
@@ -157,3 +157,4 @@ export const PreprocessingPreview: React.FC<PreprocessingPreviewProps> = ({
         </div>
     );
 };
+

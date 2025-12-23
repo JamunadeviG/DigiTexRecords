@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState } from 'react';
 import type { User } from '../types';
-import { mockBackend } from '../services/mockBackend';
+import { authService } from '../services/authService';
 
 interface AuthContextType {
     user: User | null;
@@ -16,8 +16,11 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [user, setUser] = useState<User | null>(null);
-    const [token, setToken] = useState<string | null>(null);
+    const [user, setUser] = useState<User | null>(() => {
+        const savedUser = localStorage.getItem('user');
+        return savedUser ? JSON.parse(savedUser) : null;
+    });
+    const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'));
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -25,9 +28,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsLoading(true);
         setError(null);
         try {
-            const response = await mockBackend.signIn(email, password);
+            const response = await authService.signIn(email, password);
             setUser(response.user);
             setToken(response.token);
+            localStorage.setItem('user', JSON.stringify(response.user));
+            localStorage.setItem('token', response.token);
         } catch (err: any) {
             setError(err.message || 'Login failed');
             throw err;
@@ -40,9 +45,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsLoading(true);
         setError(null);
         try {
-            const response = await mockBackend.signUp(userData);
+            const response = await authService.signUp(userData);
             setUser(response.user);
             setToken(response.token);
+            localStorage.setItem('user', JSON.stringify(response.user));
+            localStorage.setItem('token', response.token);
         } catch (err: any) {
             setError(err.message || 'Registration failed');
             throw err;
@@ -54,6 +61,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const logout = () => {
         setUser(null);
         setToken(null);
+        localStorage.removeItem('user');
+        localStorage.removeItem('token');
     };
 
     return (

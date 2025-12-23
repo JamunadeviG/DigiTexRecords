@@ -38,7 +38,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                                     {t('nav.staff')}
                                 </Link>
                             )}
-                            {isAuthenticated && (
+                            {isAuthenticated && user?.role === 'public' && (
                                 <Link
                                     to="/search"
                                     className={`flex items-center gap-2 px-4 py-2 rounded-md transition-colors ${location.pathname === '/search'

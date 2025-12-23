@@ -14,14 +14,22 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: strin
   const { isAuthenticated, user, isLoading } = useAuth();
   const location = useLocation();
 
-  if (isLoading) return <div className="p-8 text-center">Loading...</div>;
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center text-tn-green">Checking permissions...</div>;
 
   if (!isAuthenticated) {
     return <Navigate to="/signin" state={{ from: location }} replace />;
   }
 
+  // Strict Role Enforcement
   if (allowedRoles && user && !allowedRoles.includes(user.role)) {
-    return <div className="p-8 text-center text-red-600">Access Denied: You do not have permission to view this page.</div>;
+    console.warn(`[Auth] Access Denied for ${user.role} at ${location.pathname}`);
+
+    // Redirect to appropriate dashboard
+    if (user.role === 'staff') {
+      return <Navigate to="/staff" replace />;
+    } else {
+      return <Navigate to="/search" replace />;
+    }
   }
 
   return <>{children}</>;
@@ -30,6 +38,11 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: strin
 const LandingPage: React.FC = () => {
   const { t } = useLanguage();
   const { isAuthenticated, user } = useAuth();
+
+  // Auto-redirect if already logged in
+  if (isAuthenticated && user) {
+    return <Navigate to={user.role === 'staff' ? "/staff" : "/search"} replace />;
+  }
 
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -44,24 +57,15 @@ const LandingPage: React.FC = () => {
       </p>
 
       <div className="flex gap-6">
-        {!isAuthenticated ? (
-          <>
-            <Link to="/signin" className="flex items-center gap-2 px-8 py-4 bg-tn-orange hover:bg-orange-600 text-white rounded-lg font-semibold text-lg transition-transform hover:-translate-y-1 shadow-lg shadow-orange-200">
-              <LogIn size={20} />
-              Sign In to Portal
-              <ArrowRight size={20} />
-            </Link>
-            <Link to="/signup" className="flex items-center gap-2 px-8 py-4 bg-white hover:bg-gray-50 text-gray-800 border-2 border-gray-200 rounded-lg font-semibold text-lg transition-transform hover:-translate-y-1">
-              <Users size={20} />
-              Register
-            </Link>
-          </>
-        ) : (
-          <Link to={user?.role === 'staff' ? "/staff" : "/search"} className="flex items-center gap-2 px-8 py-4 bg-tn-green hover:bg-green-700 text-white rounded-lg font-semibold text-lg transition-transform hover:-translate-y-1 shadow-lg shadow-green-200">
-            <ArrowRight size={20} />
-            Go to Dashboard
-          </Link>
-        )}
+        <Link to="/signin" className="flex items-center gap-2 px-8 py-4 bg-tn-orange hover:bg-orange-600 text-white rounded-lg font-semibold text-lg transition-transform hover:-translate-y-1 shadow-lg shadow-orange-200">
+          <LogIn size={20} />
+          Sign In to Portal
+          <ArrowRight size={20} />
+        </Link>
+        <Link to="/signup" className="flex items-center gap-2 px-8 py-4 bg-white hover:bg-gray-50 text-gray-800 border-2 border-gray-200 rounded-lg font-semibold text-lg transition-transform hover:-translate-y-1">
+          <Users size={20} />
+          Register
+        </Link>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-24 max-w-5xl">
@@ -98,14 +102,17 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/signin" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
+
+        {/* Protected Staff Routes */}
         <Route path="/staff" element={
           <ProtectedRoute allowedRoles={['staff']}>
             <StaffDashboard />
           </ProtectedRoute>
         } />
-        {/* Search is open to Public and Staff, but requires login per new requirement flow */}
+
+        {/* Protected Public Routes */}
         <Route path="/search" element={
-          <ProtectedRoute allowedRoles={['staff', 'public']}>
+          <ProtectedRoute allowedRoles={['public']}>
             <PublicSearch />
           </ProtectedRoute>
         } />
