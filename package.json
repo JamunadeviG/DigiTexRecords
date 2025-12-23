@@ -21,6 +21,7 @@
     "lucide-react": "^0.562.0",
     "mongoose": "^9.0.2",
     "multer": "^2.0.2",
+    "ollama": "^0.6.3",
     "openai": "^6.15.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

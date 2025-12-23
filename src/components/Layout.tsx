@@ -2,7 +2,7 @@ import React from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
-import { Search, UserCircle, Globe, LogOut, LogIn } from 'lucide-react';
+import { Search, UserCircle, Globe, LogOut, LogIn, Settings } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { t, language, setLanguage } = useLanguage();
@@ -63,18 +63,43 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                         <div className="h-6 w-px bg-gray-300 mx-2"></div>
 
                         {isAuthenticated ? (
-                            <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-4 relative">
                                 <div className="text-right hidden sm:block">
                                     <p className="text-sm font-bold text-gray-800">{user?.fullName}</p>
                                     <p className="text-xs text-gray-500 capitalize">{user?.role} User</p>
                                 </div>
-                                <button
-                                    onClick={logout}
-                                    className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                                    title="Logout"
-                                >
-                                    <LogOut size={20} />
-                                </button>
+
+                                {/* User Dropdown */}
+                                <div className="relative group">
+                                    <button
+                                        className="flex items-center gap-2 p-2 hover:bg-gray-100 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-tn-orange"
+                                    >
+                                        <div className="w-8 h-8 bg-tn-orange/10 text-tn-orange rounded-full flex items-center justify-center">
+                                            <UserCircle size={20} />
+                                        </div>
+                                    </button>
+
+                                    {/* Dropdown Content - Hover based for simplicity or click based if preferred, keeping simple hover/group for now or simple JS toggle */}
+                                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 border border-gray-100 hidden group-hover:block hover:block z-50 animate-in fade-in slide-in-from-top-2">
+                                        <div className="px-4 py-2 border-b border-gray-100 sm:hidden">
+                                            <p className="text-sm font-bold text-gray-800">{user?.fullName}</p>
+                                            <p className="text-xs text-gray-500 capitalize">{user?.role}</p>
+                                        </div>
+
+                                        <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                            <UserCircle size={16} /> Profile
+                                        </a>
+                                        <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                            <Settings size={16} /> Settings
+                                        </a>
+                                        <button
+                                            onClick={logout}
+                                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                        >
+                                            <LogOut size={16} /> Logout
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         ) : (
                             <Link to="/signin" className="flex items-center gap-2 px-4 py-2 bg-tn-orange text-white rounded-md text-sm font-bold hover:bg-orange-600 shadow-sm transition-colors">

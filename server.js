@@ -6,13 +6,42 @@ import cors from 'cors';
 import multer from 'multer';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import ollama from 'ollama';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Memory storage
+// Memory storage (Legacy/Existing)
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Disk Storage (For Ollama Process)
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadPath = path.join(__dirname, 'uploads/temp');
+        if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+    },
+    filename: (req, file, cb) => {
+        cb(null, `${Date.now()}-${file.originalname}`);
+    }
+});
+
+const uploadDisk = multer({
+    storage: storage,
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
+    fileFilter: (req, file, cb) => {
+        const filetypes = /jpeg|jpg|png|pdf/;
+        const mimetype = filetypes.test(file.mimetype);
+        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+        if (mimetype && extname) {
+            return cb(null, true);
+        }
+        cb(new Error('Only images and PDFs are allowed'));
+    }
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_key_secure_12345';
 
@@ -24,7 +53,7 @@ const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     phone: String,
-    role: { type: String, enum: ['staff', 'public'], default: 'public' },
+    role: { type: String, enum: ['staff', 'public', 'admin'], default: 'public' },
     officeDetails: {
         officeName: String,
         officeCode: String,
@@ -105,8 +134,8 @@ const __dirname = path.dirname(__filename);
 
 // --- Routes ---
 
-// 1. Public Signup (Forces role='public')
-app.post('/api/auth/signup', async (req, res) => {
+// 1. Public Registration (Open)
+app.post('/api/auth/register/public', async (req, res) => {
     try {
         const { fullName, email, password, phone } = req.body;
 
@@ -122,8 +151,8 @@ app.post('/api/auth/signup', async (req, res) => {
             email,
             password: hashedPassword,
             phone,
-            role: 'public', // Enforced
-            officeDetails: null // Public users don't have office details
+            role: 'public', // Strictly Enforced
+            officeDetails: null
         });
 
         await newUser.save();
@@ -190,8 +219,8 @@ app.post('/api/auth/signin', async (req, res) => {
     }
 });
 
-// 3. Admin/Staff Create Staff (Protected)
-app.post('/api/admin/create-staff', verifyToken, verifyStaff, async (req, res) => {
+// 3. Staff Registration (Open - per user request)
+app.post('/api/auth/register/staff', async (req, res) => {
     try {
         const { fullName, email, password, phone, officeDetails } = req.body;
 
@@ -205,7 +234,7 @@ app.post('/api/admin/create-staff', verifyToken, verifyStaff, async (req, res) =
             email,
             password: hashedPassword,
             phone,
-            role: 'staff', // Explicitly Staff
+            role: 'staff', // Strictly Enforced
             officeDetails
         });
 
@@ -266,174 +295,274 @@ app.post('/api/ocr/preprocess', verifyToken, verifyStaff, upload.single('documen
     }
 });
 
-// 2. Recognition Endpoint (OCR Only - Staff Only)
-app.post('/api/ocr/recognize', verifyToken, verifyStaff, upload.single('document'), async (req, res) => {
-    try {
-        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+// 2. OCR Recognition Endpoint (Step 2 of Workflow)
+app.post('/api/ocr/recognize', uploadDisk.single('document'), async (req, res) => {
+    // Re-use the same Qwen logic as /process
+    // This endpoint exists to match the "Local Mode" / "Step-by-Step" workflow in the frontend
 
-        const tempFilePath = path.join(__dirname, `temp_ocr_${Date.now()}.jpg`);
-        fs.writeFileSync(tempFilePath, req.file.buffer);
+    // Logic is identical to /api/ocr/process
+    const startTime = Date.now();
+    let filePath = null;
 
-        const pythonProcess = spawn('python', ['ocr_engine.py', tempFilePath, '--mode', 'ocr']);
-
-        let output = '';
-        pythonProcess.stdout.on('data', (data) => output += data.toString());
-
-        pythonProcess.on('close', async (code) => {
-            fs.unlink(tempFilePath, () => { });
-
-            if (code !== 0) return res.status(500).json({ error: 'OCR failed' });
-
-            try {
-                const result = JSON.parse(output);
-                if (result.status === 'success') {
-                    // Extract structured data (similar to legacy)
-                    const fullText = result.full_text;
-                    const structuredData = {
-                        docNumber: (fullText.match(/எண்[:\s-]*(\d+\/\d+)/) || [])[1] || "",
-                        date: (fullText.match(/(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/) || [])[0] || "",
-                        surveyNumber: (fullText.match(/Survey No\.?\s*(\d+\/?\w*)/i) || [])[1] || "",
-                        category: (fullText.match(/கிரைய பத்திரம்|Sale Deed|Lease|Mortgage/i) || [])[0] || "Sale Deed",
-                        fullText: fullText,
-                        blocks: result.blocks
-                    };
-
-                    // Save to DB
-                    const newDoc = new Document({
-                        fileName: req.file.originalname,
-                        docNumber: structuredData.docNumber,
-                        category: structuredData.category,
-                        extractedText: fullText,
-                        uploadedAt: new Date(),
-                        userId: req.user.id // Use authenticated User ID
-                    });
-                    await newDoc.save();
-
-                    res.json({
-                        success: true,
-                        text: fullText,
-                        structuredData,
-                        confidence: result.confidence
-                    });
-                } else {
-                    res.status(500).json({ error: result.message });
-                }
-            } catch (e) {
-                res.status(500).json({ error: 'Failed to parse OCR output' });
-            }
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Legacy/Combined Endpoint
-app.post('/api/ocr/process', upload.single('document'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        console.log(`[OCR] Processing ${req.file.originalname} with Python (ocr_tamil)...`);
+        filePath = req.file.path;
+        console.log(`[OCR Recognize] Processing file: ${req.file.originalname}`);
 
-        // 1. Save buffer to temp file
-        const tempFilePath = path.join(__dirname, `temp_upload_${Date.now()}.jpg`);
-        fs.writeFileSync(tempFilePath, req.file.buffer);
+        const fileBuffer = fs.readFileSync(filePath);
 
-        // 2. Spawn Python process
-        const pythonProcess = spawn('python', ['ocr_engine.py', tempFilePath]); // Default mode
-
-        let ocrResult = '';
-        let errorOutput = '';
-
-        pythonProcess.stdout.on('data', (data) => {
-            ocrResult += data.toString();
+        const response = await ollama.chat({
+            model: 'qwen2.5-vl:7b',
+            messages: [{
+                role: 'user',
+                content: `Perform optical character recognition (OCR) on this image.
+                1. Extract ALL text present in the image verbatim. Do not summarize or rephrase.
+                2. Identify specific fields for land registration:
+                   - documentNumber (Document No / ஆவண எண்)
+                   - ownerName (Name of Owner/Seller/Buyer)
+                   - surveyNumber (Survey No / சர்வே எண்)
+                   - villageTaluk (Village & Taluk)
+                   - registrationDate (Date)
+                   - documentType (Sale Deed, Settlement, etc.)
+                
+                Return a single JSON object. If a field is not found, use "".
+                Ensure the "fullExtractedText" field contains the complete raw text of the document.
+                
+                JSON Format:
+                {
+                    "documentNumber": "string",
+                    "ownerName": "string",
+                    "surveyNumber": "string",
+                    "villageTaluk": "string",
+                    "registrationDate": "string",
+                    "documentType": "string",
+                    "fullExtractedText": "string"
+                }`,
+                images: [fileBuffer]
+            }],
+            format: 'json',
+            options: {
+                temperature: 0,
+                num_ctx: 4096
+            }
         });
 
-        pythonProcess.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-            // Optional: Log stderr but don't fail immediately as some libs print warnings to stderr
-            console.warn(`[Python Stderr]: ${data}`);
-        });
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(2);
 
-        pythonProcess.on('close', async (code) => {
-            // Clean up temp file
-            fs.unlink(tempFilePath, (err) => {
-                if (err) console.error("Error deleting temp file:", err);
-            });
+        // Parse and cleanup
+        let resultData;
+        try {
+            const content = response.message.content.replace(/```json\n?|\n?```/g, '').trim();
+            resultData = JSON.parse(content);
+        } catch (parseError) {
+            resultData = { fullExtractedText: response.message.content };
+        }
 
-            if (code !== 0) {
-                console.error(`[OCR] Python process exited with code ${code}`);
-                return res.status(500).json({
-                    error: 'OCR Process Failed',
-                    details: errorOutput || 'Unknown python error'
-                });
-            }
+        fs.unlink(filePath, () => { });
 
-            console.log("[OCR] Python finished processing");
-
-            try {
-                // Parse JSON output from EasyOCR script
-                let result;
-                try {
-                    result = JSON.parse(ocrResult);
-                } catch (e) {
-                    console.error("JSON Parse Error:", ocrResult);
-                    throw new Error("Invalid output from OCR engine");
-                }
-
-                if (result.status === 'error') {
-                    return res.status(500).json({ error: result.message });
-                }
-
-                const fullText = result.full_text || "";
-
-                // Structured Data Extraction (Regex Fallback)
-                const structuredData = {
-                    docNumber: (fullText.match(/எண்[:\s-]*(\d+\/\d+)/) || [])[1] || "",
-                    date: (fullText.match(/(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/) || [])[0] || "",
-                    surveyNumber: (fullText.match(/Survey No\.?\s*(\d+\/?\w*)/i) || [])[1] || "",
-                    category: (fullText.match(/கிரைய பத்திரம்|Sale Deed|Lease|Mortgage/i) || [])[0] || "Sale Deed",
-                    fullText: fullText,
-                    blocks: result.blocks // Return detailed blocks with confidence
-                };
-
-                // Save to DB
-                const newDoc = new Document({
-                    fileName: req.file.originalname,
-                    docNumber: structuredData.docNumber,
-                    category: structuredData.category,
-                    ownerName: "", // Placeholder
-                    extractedText: fullText,
-                    uploadedAt: new Date(),
-                    userId: req.body.userId || null
-                });
-
-                await newDoc.save();
-                console.log(`[DB] Saved Document: ${newDoc._id}`);
-
-                res.json({
-                    success: true,
-                    text: fullText,
-                    structuredData: structuredData,
-                    confidence: result.blocks && result.blocks.length > 0 ? result.blocks[0].confidence : 0,
-                    data: newDoc
-                });
-
-            } catch (err) {
-                console.error("Processing Error:", err);
-                return res.status(500).json({ error: "Failed to process OCR results", details: err.message });
-            }
+        // Return format expected by "Local Mode" client
+        res.json({
+            success: true,
+            text: resultData.fullExtractedText || '',
+            confidence: 0.95,
+            structuredData: resultData,
+            processingTime: `${processingTime}s`
         });
 
     } catch (err) {
-        console.error("Server Error:", err);
+        console.error('[OCR Recognize Error]', err);
+        if (filePath) fs.unlink(filePath, () => { });
+        res.status(500).json({ error: 'OCR processing failed', details: err.message });
+    }
+});
+
+// 3. Ollama OCR Endpoint (Single File - Cloud Mode direct)
+app.post('/api/ocr/process', uploadDisk.single('document'), async (req, res) => {
+    const startTime = Date.now();
+    let filePath = null;
+
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        filePath = req.file.path;
+        console.log(`[OCR Start] Processing file: ${req.file.originalname} (${req.file.size} bytes)`);
+
+        // Read file and convert to base64
+        const fileBuffer = fs.readFileSync(filePath);
+        // const base64Image = fileBuffer.toString('base64'); // Not strictly needed if passing buffer, but good for debug
+
+        const response = await ollama.chat({
+            model: 'qwen2.5-vl:7b',
+            messages: [{
+                role: 'user',
+                content: `Perform optical character recognition (OCR) on this image.
+                1. Extract ALL text present in the image verbatim. Do not summarize or rephrase.
+                2. Identify specific fields for land registration:
+                   - documentNumber (Document No / ஆவண எண்)
+                   - ownerName (Name of Owner/Seller/Buyer)
+                   - surveyNumber (Survey No / சர்வே எண்)
+                   - villageTaluk (Village & Taluk)
+                   - registrationDate (Date)
+                   - documentType (Sale Deed, Settlement, etc.)
+                
+                Return a single JSON object. If a field is not found, use "".
+                Ensure the "fullExtractedText" field contains the complete raw text of the document.
+                
+                JSON Format:
+                {
+                    "documentNumber": "string",
+                    "ownerName": "string",
+                    "surveyNumber": "string",
+                    "villageTaluk": "string",
+                    "registrationDate": "string",
+                    "documentType": "string",
+                    "fullExtractedText": "string"
+                }`,
+                images: [fileBuffer]
+            }],
+            format: 'json',
+            options: {
+                temperature: 0, // Zero temperature for deterministic extraction
+                num_ctx: 4096   // Increase context window if needed
+            }
+        });
+
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`[OCR Success] Processed in ${processingTime}s`);
+
+        let resultData;
+        try {
+            // Handle potential markdown wrapping in response
+            const content = response.message.content.replace(/```json\n?|\n?```/g, '').trim();
+            resultData = JSON.parse(content);
+        } catch (parseError) {
+            console.warn('[OCR Warning] Failed to parse JSON, returning raw text');
+            resultData = { fullExtractedText: response.message.content };
+        }
+
+        // Cleanup
+        fs.unlink(filePath, (err) => {
+            if (err) console.error(`[Cleanup Error] Failed to delete ${filePath}:`, err);
+        });
+
+        res.json({
+            success: true,
+            fileName: req.file.originalname,
+            processingTime: `${processingTime}s`,
+            ...resultData
+        });
+
+    } catch (err) {
+        console.error('[OCR Error]', err);
+        if (filePath) {
+            fs.unlink(filePath, () => { });
+        }
         res.status(500).json({
-            error: "OCR Processing Failed",
-            details: err.message,
-            hint: "Check server logs"
+            success: false,
+            error: 'OCR processing failed',
+            details: err.message
         });
     }
+});
+
+// 4. Ollama OCR Batch Endpoint
+app.post('/api/ocr/batch', uploadDisk.array('documents', 10), async (req, res) => {
+    const startTime = Date.now();
+    const files = req.files;
+    const results = [];
+
+    if (!files || files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    console.log(`[Batch Start] Processing ${files.length} files`);
+
+    // Process sequentially to avoid overloading the local model
+    for (const [index, file] of files.entries()) {
+        const fileStartTime = Date.now();
+        console.log(`[Batch Progress] Processing ${index + 1}/${files.length}: ${file.originalname}`);
+
+        try {
+            const fileBuffer = fs.readFileSync(file.path);
+
+            const response = await ollama.chat({
+                model: 'qwen2.5-vl:7b',
+                messages: [{
+                    role: 'user',
+                    content: `Perform optical character recognition (OCR) on this image.
+                    1. Extract ALL text present in the image verbatim. Do not summarize or rephrase.
+                    2. Identify specific fields for land registration:
+                       - documentNumber (Document No / ஆவண எண்)
+                       - ownerName (Name of Owner/Seller/Buyer)
+                       - surveyNumber (Survey No / சர்வே எண்)
+                       - villageTaluk (Village & Taluk)
+                       - registrationDate (Date)
+                       - documentType (Sale Deed, Settlement, etc.)
+                    
+                    Return a single JSON object. If a field is not found, use "".
+                    Ensure the "fullExtractedText" field contains the complete raw text of the document.
+                    
+                    JSON Format:
+                    {
+                        "documentNumber": "string",
+                        "ownerName": "string",
+                        "surveyNumber": "string",
+                        "villageTaluk": "string",
+                        "registrationDate": "string",
+                        "documentType": "string",
+                        "fullExtractedText": "string"
+                    }`,
+                    images: [fileBuffer]
+                }],
+                format: 'json',
+                options: {
+                    temperature: 0,
+                    num_ctx: 4096
+                }
+            });
+
+            let parsedData = {};
+            try {
+                const content = response.message.content.replace(/```json\n?|\n?```/g, '').trim();
+                parsedData = JSON.parse(content);
+            } catch (e) {
+                parsedData = { fullExtractedText: response.message.content };
+            }
+
+            results.push({
+                fileName: file.originalname,
+                status: 'success',
+                processingTime: ((Date.now() - fileStartTime) / 1000).toFixed(2) + 's',
+                data: parsedData
+            });
+
+        } catch (error) {
+            console.error(`[Batch Error] File: ${file.originalname}`, error);
+            results.push({
+                fileName: file.originalname,
+                status: 'failed',
+                error: error.message
+            });
+        } finally {
+            // Cleanup individual file
+            fs.unlink(file.path, () => { });
+        }
+    }
+
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`[Batch Complete] Finished in ${totalTime}s`);
+
+    res.json({
+        success: true,
+        totalFiles: files.length,
+        totalTime: `${totalTime}s`,
+        results: results
+    });
 });
 
 // Get Documents

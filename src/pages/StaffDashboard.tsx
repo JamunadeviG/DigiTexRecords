@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { useDocuments } from '../context/DocumentContext';
-import { Upload, FileCheck, BrainCircuit, Save, Loader2, FileText, ZoomIn, ZoomOut, CheckCircle } from 'lucide-react';
+import { Upload, FileCheck, BrainCircuit, Save, Loader2, FileText, ZoomIn, ZoomOut, CheckCircle, UserPlus } from 'lucide-react';
 import type { DocCategory } from '../types';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import type { CellData } from '../services/imageProcessing';
 import { OcrOverlay } from '../components/OcrOverlay';
@@ -99,11 +100,11 @@ export const StaffDashboard: React.FC = () => {
 
     // Unified Qwen Batch Processing
     const startQwenBatchProcessing = async () => {
-        // Skip to "Processing" Step immediately, or a new "Cloud Processing" step
-        setCurrentStep(2); // Reusing Step 2 (originally 'Processing' which was OCR)
+        // Enforce Preprocessing -> Then OCR
+        setCurrentStep(2); // 'Processing' UI
         setProcessingLogs([]);
         setProcessingProgress(0);
-        setOcrStatus('Initializing Qwen AI Agents...');
+        setOcrStatus('Starting Intelligent Document Processing...');
 
         const startTime = performance.now();
         setStats({ speed: 0, startTime, processedCount: 0 });
@@ -115,14 +116,50 @@ export const StaffDashboard: React.FC = () => {
 
         for (let i = 0; i < totalFiles; i++) {
             const file = selectedFiles[i];
-            setOcrStatus(`Qwen Analyzing: ${file.name} (${i + 1}/${totalFiles})...`);
+            setOcrStatus(`Enhancing & Analyzing: ${file.name} (${i + 1}/${totalFiles})...`);
 
             try {
-                const formData = new FormData();
-                formData.append('document', file); // Field name matches server endpoint
-                if (user?.id) {
-                    formData.append('userId', user.id);
+                // Step 1: Preprocessing (Server-side via Python)
+                let imageToProcess: File = file;
+
+                // Only preprocess if image (not PDF for now, or use server logic)
+                // Assuming server handles PDF preprocessing -> Image
+                const preFormData = new FormData();
+                preFormData.append('document', file);
+
+                let preprocessedBase64 = null;
+
+                try {
+                    const preResponse = await fetch('http://localhost:5000/api/ocr/preprocess', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        body: preFormData
+                    });
+
+                    if (preResponse.ok) {
+                        const preData = await preResponse.json();
+                        preprocessedBase64 = preData.processedImage;
+                        // Convert back to file/blob for OCR upload if needed, OR send to OCR
+                        // Ideally OCR endpoint accepts base64? No, we set it to accept file.
+                        // So let's convert Blob.
+                        if (preprocessedBase64) {
+                            const res = await fetch(preprocessedBase64);
+                            const blob = await res.blob();
+                            imageToProcess = new File([blob], `pre_${file.name}`, { type: 'image/jpeg' });
+                        }
+                        addLog(`Preprocessing successful for ${file.name}`);
+                    } else {
+                        addLog(`Preprocessing skipped/failed for ${file.name}, using original.`);
+                    }
+                } catch (e) {
+                    console.warn("Preprocessing error", e);
+                    addLog(`Preprocessing failed: ${e}, using original.`);
                 }
+
+                // Step 2: OCR with Qwen (using /api/ocr/process or /api/ocr/recognize - let's use process for full struct)
+                const formData = new FormData();
+                formData.append('document', imageToProcess);
+                if (user?.id) formData.append('userId', user.id);
 
                 const response = await fetch('http://localhost:5000/api/ocr/process', {
                     method: 'POST',
@@ -132,29 +169,29 @@ export const StaffDashboard: React.FC = () => {
                     body: formData
                 });
 
-                if (!response.ok) throw new Error('API Request Failed');
+                if (!response.ok) throw new Error('OCR Extract Failed');
 
                 const data = await response.json();
-                const struct = data.structuredData || {};
+                const struct = data; // /process returns flat JSON combined with root fields, or inside structuredData?
+                // Server /process returns: { success, fileName, processingTime, ...resultData } where resultData has extracted fields.
 
-                // Map to Dashboard Data Structure
                 const docResult = {
                     id: Math.random().toString(36).substr(2, 9),
                     fileName: file.name,
                     file: file,
-                    displayImage: URL.createObjectURL(file), // Show original as we don't have a specific preprocessed one
-                    docNumber: struct.registrationNumber || '',
-                    ownerName: struct.sellerName || struct.ownerName || '', // Prioritize detailed fields
-                    previousOwnerName: struct.buyerName || struct.previousOwnerName || '',
+                    displayImage: preprocessedBase64 || URL.createObjectURL(file), // Show Enhanced if available
+                    docNumber: struct.documentNumber || '',
+                    ownerName: struct.ownerName || '',
+                    previousOwnerName: '',
                     surveyNumber: struct.surveyNumber || '',
                     category: (struct.documentType || 'Sale Deed') as DocCategory,
-                    location: struct.village || struct.district || '',
+                    location: struct.villageTaluk || '',
                     date: struct.registrationDate || new Date().toISOString().split('T')[0],
                     shelf: '',
                     rack: '',
-                    confidence: 0.95, // Qwen is high confidence
+                    confidence: 0.95,
                     ocrData: {
-                        text: struct.fullText || '',
+                        text: struct.fullExtractedText || '',
                         fields: struct,
                         confidence: 0.95
                     },
@@ -163,14 +200,12 @@ export const StaffDashboard: React.FC = () => {
                         hasOcr: true,
                         isValid: true
                     },
-                    tableData: undefined, // Qwen might extract table data in JSON but we skip visual table mapping for now
-                    metrics: { method: 'Qwen-VL' }
+                    metrics: { method: 'Qwen-VL + Preprocessing' }
                 };
 
                 tempResults.push(docResult);
-                setProcessedDocuments([...tempResults]); // Real-time update
+                setProcessedDocuments([...tempResults]);
 
-                // Update Progress
                 const currentCount = i + 1;
                 setProcessingProgress(Math.floor((currentCount / totalFiles) * 100));
 
@@ -182,9 +217,8 @@ export const StaffDashboard: React.FC = () => {
                 }));
 
             } catch (error) {
-                console.error(`Qwen Processing Failed for ${file.name}`, error);
+                console.error(`Processing Failed for ${file.name}`, error);
                 addLog(`Failed: ${file.name} - ${error}`);
-                // Add error placeholder so flow continues
                 tempResults.push({
                     id: Math.random().toString(36),
                     fileName: file.name,
@@ -193,7 +227,7 @@ export const StaffDashboard: React.FC = () => {
                     docNumber: 'ERROR',
                     ownerName: 'Processing Failed',
                     confidence: 0,
-                    ocrData: { text: 'Details in logs', fields: {}, confidence: 0 },
+                    ocrData: { text: '', fields: {}, confidence: 0 },
                     integrityCheck: { isValid: false }
                 });
                 setProcessedDocuments([...tempResults]);
@@ -201,8 +235,8 @@ export const StaffDashboard: React.FC = () => {
         }
 
         setProcessingProgress(100);
-        setOcrStatus('Cloud Analysis Complete! ✓');
-        setCurrentStep(3); // Go to Review
+        setOcrStatus('Analysis Complete! ✓');
+        setCurrentStep(3);
     };
 
     const startPreprocessing = async () => {
@@ -449,10 +483,19 @@ export const StaffDashboard: React.FC = () => {
 
     return (
         <div className="max-w-6xl mx-auto">
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-                <BrainCircuit className="text-tn-orange" />
-                {t('nav.staff')} - Digitalization Workflow
-            </h2>
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold flex items-center gap-2">
+                    <BrainCircuit className="text-tn-orange" />
+                    {t('nav.staff')} - Digitalization Workflow
+                </h2>
+                <Link
+                    to="/staff/register"
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
+                >
+                    <UserPlus size={18} />
+                    Add Staff
+                </Link>
+            </div>
 
             {/* Stepper */}
             <div className="flex justify-between mb-8 relative">

@@ -4,7 +4,8 @@ import { Layout } from './components/Layout';
 import { StaffDashboard } from './pages/StaffDashboard';
 import { PublicSearch } from './pages/PublicSearch';
 import { SignIn } from './pages/auth/SignIn';
-import { SignUp } from './pages/auth/SignUp';
+import { PublicSignup } from './pages/auth/PublicSignup';
+import { StaffSignup } from './pages/auth/StaffSignup';
 import { useLanguage } from './context/LanguageContext';
 import { useAuth } from './context/AuthContext';
 import { ArrowRight, Shield, Database, Users, LogIn } from 'lucide-react';
@@ -30,6 +31,19 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: strin
     } else {
       return <Navigate to="/search" replace />;
     }
+  }
+
+  return <>{children}</>;
+};
+
+// Public Only Route (Redirects if already logged in)
+const PublicOnlyRoute = ({ children }: { children: React.ReactNode }) => {
+  const { isAuthenticated, user, isLoading } = useAuth();
+
+  if (isLoading) return <div>Loading...</div>;
+
+  if (isAuthenticated && user) {
+    return <Navigate to={user.role === 'staff' ? "/staff" : "/search"} replace />;
   }
 
   return <>{children}</>;
@@ -100,13 +114,29 @@ function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<LandingPage />} />
-        <Route path="/signin" element={<SignIn />} />
-        <Route path="/signup" element={<SignUp />} />
+
+        <Route path="/signin" element={
+          <PublicOnlyRoute>
+            <SignIn />
+          </PublicOnlyRoute>
+        } />
+
+        <Route path="/signup" element={
+          <PublicOnlyRoute>
+            <PublicSignup />
+          </PublicOnlyRoute>
+        } />
 
         {/* Protected Staff Routes */}
         <Route path="/staff" element={
-          <ProtectedRoute allowedRoles={['staff']}>
+          <ProtectedRoute allowedRoles={['staff', 'admin']}>
             <StaffDashboard />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/staff/register" element={
+          <ProtectedRoute allowedRoles={['staff', 'admin']}>
+            <StaffSignup />
           </ProtectedRoute>
         } />
 

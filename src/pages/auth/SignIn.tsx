@@ -5,12 +5,19 @@ import { Shield, Loader2, AlertCircle } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 
 export const SignIn: React.FC = () => {
-    const { login, isLoading, error } = useAuth();
+    const { login, isLoading, error, isAuthenticated, user } = useAuth();
     const navigate = useNavigate();
     const { t } = useLanguage();
 
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+
+    // Force redirect if already logged in (Component Level Guard)
+    React.useEffect(() => {
+        if (isAuthenticated && user) {
+            navigate(user.role === 'staff' ? '/staff' : '/search', { replace: true });
+        }
+    }, [isAuthenticated, user, navigate]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
