@@ -7,12 +7,15 @@ import type { DocCategory } from '../types';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import type { CellData } from '../services/imageProcessing';
-import { OcrOverlay } from '../components/OcrOverlay';
 import { CorrectionInterface } from '../components/CorrectionInterface';
 import { PreprocessingPreview } from '../components/PreprocessingPreview';
-import { QwenOCR } from '../components/QwenOCR';
+
 
 const steps = ['Upload', 'Preprocessing', 'Processing', 'Review', 'Storage', 'Save'];
+
+// Add to start of file imports/interfaces if needed, but we can augment inline since we use 'any' for now or update types. 
+// Ideally we update types/index.ts first but let's just use the fields.
+import { BookOpen, Hash, FileCheck2 } from 'lucide-react'; // Added icons
 
 export const StaffDashboard: React.FC = () => {
     const { t } = useLanguage();
@@ -36,7 +39,7 @@ export const StaffDashboard: React.FC = () => {
     // Selection state for Review Phase
     const [selectedDocIndex, setSelectedDocIndex] = useState<number>(0);
     const [activeCorrectionCell, setActiveCorrectionCell] = useState<CellData | null>(null);
-    const [showQwen, setShowQwen] = useState(false);
+
 
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [rejectedFiles, setRejectedFiles] = useState<{ file: File; reason: string }[]>([]);
@@ -366,8 +369,14 @@ export const StaffDashboard: React.FC = () => {
                         ownerName: '', // Placeholder as server extraction is basic
                         previousOwnerName: '',
                         surveyNumber: straData.surveyNumber || '',
-                        category: (straData.category || 'Sale Deed') as DocCategory,
+                        category: (straData.documentType || 'Sale Deed') as DocCategory, // Use dynamic docType
                         location: '',
+
+                        // New Fields
+                        pattaNumber: straData.pattaNumber || '',
+                        batchNumber: straData.batchNumber || '',
+                        summary: straData.summary || '',
+
                         date: straData.date || new Date().toISOString().split('T')[0],
                         shelf: '',
                         rack: '',
@@ -443,37 +452,93 @@ export const StaffDashboard: React.FC = () => {
         }
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         const missingLocation = processedDocuments.some(d => !d.shelf || !d.rack);
         if (missingLocation) {
             alert("Please assign Shelf and Rack numbers for ALL documents.");
             return;
         }
 
-        processedDocuments.forEach(doc => {
-            addDocument({
-                id: doc.id,
-                docNumber: doc.docNumber,
-                category: doc.category,
-                ownerName: doc.ownerName,
-                previousOwnerName: doc.previousOwnerName,
-                surveyNumber: doc.surveyNumber,
-                location: doc.location,
-                date: doc.date,
-                storageLocation: { shelf: doc.shelf, rack: doc.rack },
-                isVerified: true,
-                timestamp: new Date().toISOString(),
-                originalFileUrl: doc.originalFileUrl,
-                preprocessedFileUrl: doc.displayImage,
-                ocrData: doc.ocrData,
-                integrityCheck: doc.integrityCheck
-            });
-        });
+        let savedCount = 0;
+        let failedCount = 0;
 
-        alert(`${processedDocuments.length} Documents Saved Successfully!`);
-        setCurrentStep(0);
-        setSelectedFiles([]);
-        setProcessedDocuments([]);
+        for (const doc of processedDocuments) {
+            try {
+                const formData = new FormData();
+                // Append the original file
+                if (doc.file) {
+                    formData.append('document', doc.file);
+                } else if (doc.displayImage && doc.displayImage.startsWith('data:')) {
+                    // Fallback: if we only have base64 (e.g. from camera), convert to blob
+                    const res = await fetch(doc.displayImage);
+                    const blob = await res.blob();
+                    formData.append('document', blob, doc.fileName || 'scanned_doc.jpg');
+                }
+
+                // Append Metadata
+                formData.append('docNumber', doc.docNumber || '');
+                formData.append('category', doc.category || 'Unknown');
+                formData.append('ownerName', doc.ownerName || '');
+                formData.append('surveyNumber', doc.surveyNumber || '');
+                formData.append('pattaNumber', doc.pattaNumber || '');
+                formData.append('batchNumber', doc.batchNumber || '');
+                formData.append('summary', doc.summary || '');
+
+                formData.append('date', doc.date || new Date().toISOString());
+                formData.append('village', doc.location || ''); // Mapping location to village for now
+
+                // Add storage location to property details or separate
+                // We'll put it in propertyDetails for now if Schema doesn't have it explicit, 
+                // OR add it to summary/extra. 
+                // The new endpoint expects basic fields. Storage Location isn't in my new Schema explicitly yet?
+                // Wait, I didn't add shelf/rack to server.js Schema. I should add `storageLocation` object to Schema or just put in propertyDetails.
+                // Let's assume propertyDetails for flexibility or update schema later. 
+                // For now, let's put it in `ocrData` or `summary`.
+
+                // Better: Add it to ocrData so it's safely stored.
+                const enrichedOcrData = {
+                    ...doc.ocrData,
+                    storageLocation: { shelf: doc.shelf, rack: doc.rack }
+                };
+                formData.append('ocrData', JSON.stringify(enrichedOcrData));
+
+                const response = await fetch('http://localhost:5000/api/documents/save', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to save ${doc.fileName}`);
+                }
+
+                const result = await response.json();
+
+                // Update Local Context for immediate UI feedback (optional)
+                if (result.success && result.document) {
+                    addDocument({
+                        ...result.document,
+                        id: result.document._id
+                    });
+                    savedCount++;
+                }
+
+            } catch (error) {
+                console.error("Save Error:", error);
+                failedCount++;
+            }
+        }
+
+        if (savedCount > 0) {
+            alert(`${savedCount} Documents Saved Successfully to Database! ${failedCount > 0 ? `(${failedCount} failed)` : ''}`);
+            setCurrentStep(0);
+            setSelectedFiles([]);
+            setProcessedDocuments([]);
+        } else {
+            alert(`Failed to save documents. Check console for details.`);
+        }
     };
 
     const assignedCount = processedDocuments.filter(d => d.shelf && d.rack).length;
@@ -789,6 +854,27 @@ export const StaffDashboard: React.FC = () => {
                                     <p className="text-sm text-gray-500">Click highlighted cells to correct data.</p>
                                 </div>
                                 <div className="flex gap-2 items-center">
+                                    {processedDocuments.length > 1 && (
+                                        <div className="flex items-center gap-2 mr-4 border-r pr-4">
+                                            <button
+                                                className="p-1 px-2 border rounded hover:bg-gray-50 disabled:opacity-50"
+                                                onClick={() => setSelectedDocIndex(i => Math.max(0, i - 1))}
+                                                disabled={selectedDocIndex === 0}
+                                            >
+                                                &lt;
+                                            </button>
+                                            <span className="text-xs font-bold text-gray-600">
+                                                {selectedDocIndex + 1} / {processedDocuments.length}
+                                            </span>
+                                            <button
+                                                className="p-1 px-2 border rounded hover:bg-gray-50 disabled:opacity-50"
+                                                onClick={() => setSelectedDocIndex(i => Math.min(processedDocuments.length - 1, i + 1))}
+                                                disabled={selectedDocIndex === processedDocuments.length - 1}
+                                            >
+                                                &gt;
+                                            </button>
+                                        </div>
+                                    )}
                                     <span className="text-xs font-bold text-gray-500 mr-2">Zoom:</span>
                                     <button className="p-2 border rounded hover:bg-gray-50" onClick={() => setZoomLevel(z => Math.max(0.5, z - 0.2))}><ZoomOut size={16} /></button>
                                     <span className="p-2 text-sm font-mono border-t border-b w-12 text-center">{Math.round(zoomLevel * 100)}%</span>
@@ -796,84 +882,151 @@ export const StaffDashboard: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="flex-1 grid grid-cols-5 gap-6 overflow-hidden h-[600px]">
-                                {/* Document Viewer with OCR Overlay */}
-                                <div className="col-span-3 bg-gray-800 rounded-lg overflow-hidden relative border border-gray-700">
-                                    <div className="absolute inset-0 overflow-auto custom-scrollbar flex items-center justify-center bg-gray-900">
-                                        <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'center top' }} className="transition-transform duration-200">
-                                            {currentViewDoc && (
-                                                <OcrOverlay
-                                                    imageSrc={currentViewDoc.displayImage}
-                                                    tableData={currentViewDoc.tableData}
-                                                    onCellClick={setActiveCorrectionCell}
-                                                    zoomLevel={zoomLevel}
-                                                />
+                            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
+
+                                    {/* Left Column: Image with Overlay */}
+                                    <div className="bg-gray-100 rounded-lg overflow-hidden relative min-h-[500px] border border-gray-300 shadow-inner flex flex-col">
+                                        <div className="absolute top-2 right-2 z-10 bg-black/50 text-white text-xs px-2 py-1 rounded">
+                                            {currentViewDoc.fileName}
+                                        </div>
+                                        <div className="flex-1 relative overflow-auto flex items-center justify-center bg-gray-900/5">
+                                            <img
+                                                src={currentViewDoc.displayImage}
+                                                className="max-w-none transition-transform duration-200"
+                                                style={{ transform: `scale(${zoomLevel})` }}
+                                                alt="Doc Preview"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Right Column: Form Data */}
+                                    <div className="space-y-6">
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+
+                                            {/* Summary Section */}
+                                            {currentViewDoc.summary && (
+                                                <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-lg">
+                                                    <h4 className="text-sm font-bold text-blue-800 flex items-center gap-2 mb-2">
+                                                        <BookOpen size={16} />
+                                                        Document Summary
+                                                    </h4>
+                                                    <p className="text-sm text-blue-700 leading-relaxed">
+                                                        {currentViewDoc.summary}
+                                                    </p>
+                                                </div>
                                             )}
-                                        </div>
-                                    </div>
-                                </div>
 
-                                {/* Data Editor Panel */}
-                                <div className="col-span-2 overflow-y-auto pr-2 space-y-6">
-                                    {/* Document Selector */}
-                                    <div className="flex gap-2 overflow-x-auto pb-2 border-b mb-4">
-                                        {processedDocuments.map((doc, idx) => (
-                                            <button
-                                                key={doc.id}
-                                                onClick={() => setSelectedDocIndex(idx)}
-                                                className={`px-3 py-2 text-xs font-bold whitespace-nowrap rounded-t-lg border-b-2 ${selectedDocIndex === idx ? 'border-tn-orange bg-orange-50 text-tn-orange' : 'border-transparent text-gray-500'}`}
-                                            >
-                                                {doc.fileName.substring(0, 15)}...
-                                            </button>
-                                        ))}
-                                    </div>
-
-                                    {/* Form for Selected Doc */}
-                                    {currentViewDoc && (
-                                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                            <div className="flex justify-between items-start mb-4">
-                                                <div>
-                                                    <h4 className="font-bold text-gray-800">{currentViewDoc.fileName}</h4>
-                                                    <span className={`text-xs px-2 py-0.5 rounded font-bold ${currentViewDoc.confidence > 70 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                        Confidence: {Math.round(currentViewDoc.confidence)}%
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            <div className="space-y-4">
-                                                {[
-                                                    { k: 'docNumber', l: 'Document No / ஆவண எண்' },
-                                                    { k: 'ownerName', l: 'Owner / உரிமையாளர்' },
-                                                    { k: 'surveyNumber', l: 'Survey No / சர்வே எண்' },
-                                                    { k: 'date', l: 'Date / தேதி' },
-                                                ].map(field => (
-                                                    <div key={field.k}>
-                                                        <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">{field.l}</label>
-                                                        <input
-                                                            // @ts-ignore
-                                                            value={currentViewDoc[field.k]}
-                                                            onChange={(e) => updateDocField(selectedDocIndex, field.k, e.target.value)}
-                                                            className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-tn-orange focus:outline-none"
-                                                        />
+                                            <div className="grid grid-cols-2 gap-4">
+                                                {/* Category / Doc Type */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Category / வகை</label>
+                                                    <div className="relative">
+                                                        <select
+                                                            className="w-full p-2 border rounded-lg appearance-none bg-gray-50 font-medium"
+                                                            value={currentViewDoc.category}
+                                                            onChange={(e) => updateDocField(selectedDocIndex, 'category', e.target.value)}
+                                                        >
+                                                            <option>Sale Deed</option>
+                                                            <option>Patta</option>
+                                                            <option>Chitta</option>
+                                                            <option>Adangal</option>
+                                                        </select>
+                                                        <div className="absolute right-3 top-3 pointer-events-none">▼</div>
                                                     </div>
-                                                ))}
+                                                </div>
+
+                                                {/* Thokuppu En / Batch No */}
                                                 <div>
-                                                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Category / வகை</label>
-                                                    <select
-                                                        value={currentViewDoc.category}
-                                                        onChange={(e) => updateDocField(selectedDocIndex, 'category', e.target.value)}
-                                                        className="w-full p-2 text-sm border border-gray-300 rounded"
-                                                    >
-                                                        <option>Sale Deed</option>
-                                                        <option>Patta</option>
-                                                        <option>Chitta</option>
-                                                    </select>
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1">
+                                                        <Hash size={12} />
+                                                        Thokuppu En
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-tn-orange"
+                                                        value={currentViewDoc.batchNumber || ''}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'batchNumber', e.target.value)}
+                                                        placeholder="Ex: 1/3-7-86"
+                                                    />
+                                                </div>
+
+                                                {/* Patta Number */}
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1">
+                                                        <FileCheck2 size={12} />
+                                                        Patta No
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-tn-orange"
+                                                        value={currentViewDoc.pattaNumber || ''}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'pattaNumber', e.target.value)}
+                                                        placeholder="Ex: 56"
+                                                    />
+                                                </div>
+
+                                                {/* Document No */}
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Document No / ஆவண எண்</label>
+                                                    <input
+                                                        type="text"
+                                                        className={`w-full p-2 border rounded-lg ${currentViewDoc.docNumber === 'ERROR' ? 'border-red-300 bg-red-50 text-red-600' : ''}`}
+                                                        value={currentViewDoc.docNumber}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'docNumber', e.target.value)}
+                                                    />
+                                                </div>
+
+                                                {/* Survey No */}
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Survey No / சர்வே எண்</label>
+                                                    <input
+                                                        type="text"
+                                                        className="w-full p-2 border rounded-lg"
+                                                        value={currentViewDoc.surveyNumber}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'surveyNumber', e.target.value)}
+                                                    />
+                                                </div>
+
+                                                {/* Owner Name */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Owner / உரிமையாளர்</label>
+                                                    <input
+                                                        type="text"
+                                                        className="w-full p-2 border rounded-lg"
+                                                        value={currentViewDoc.ownerName}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'ownerName', e.target.value)}
+                                                    />
+                                                </div>
+
+                                                {/* Date */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Date / தேதி</label>
+                                                    <input
+                                                        type="text"
+                                                        className="w-full p-2 border rounded-lg"
+                                                        value={currentViewDoc.date}
+                                                        onChange={(e) => updateDocField(selectedDocIndex, 'date', e.target.value)}
+                                                    />
                                                 </div>
                                             </div>
                                         </div>
-                                    )}
+
+                                        {/* Raw Text Section - Requested by User */}
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                                            <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2 mb-4">
+                                                <FileText size={16} />
+                                                Extracted Raw Text / முழு உரை
+                                            </h4>
+                                            <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 h-60 overflow-y-auto font-mono text-xs whitespace-pre-wrap text-gray-700">
+                                                {currentViewDoc.ocrData?.text || "No text extracted."}
+                                            </div>
+                                        </div>
+
+                                    </div>
                                 </div>
                             </div>
+
 
                             <div className="mt-6 flex justify-end pt-4 border-t gap-4">
                                 <button onClick={() => setCurrentStep(1)} className="px-6 py-2 border border-gray-300 rounded-md text-gray-600 hover:bg-gray-50">Back</button>
@@ -931,35 +1084,23 @@ export const StaffDashboard: React.FC = () => {
                         </div>
                     )
                 }
+
+                {/* Qwen AI Modal */}
+                {
+
+                }
+
+                {/* Correction Modal */}
+                {
+                    activeCorrectionCell && (
+                        <CorrectionInterface
+                            cell={activeCorrectionCell!}
+                            onSave={handleCellSave}
+                            onClose={() => setActiveCorrectionCell(null)}
+                        />
+                    )
+                }
             </div >
-
-            {/* Qwen AI Modal */}
-            {
-                showQwen && (
-                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                        <div className="relative w-full max-w-4xl">
-                            <button
-                                onClick={() => setShowQwen(false)}
-                                className="absolute -top-10 right-0 text-white hover:text-gray-200 font-medium bg-black/20 px-3 py-1 rounded-full"
-                            >
-                                Close [Esc]
-                            </button>
-                            <QwenOCR onClose={() => setShowQwen(false)} />
-                        </div>
-                    </div>
-                )
-            }
-
-            {/* Correction Modal */}
-            {
-                activeCorrectionCell && (
-                    <CorrectionInterface
-                        cell={activeCorrectionCell}
-                        onSave={handleCellSave}
-                        onClose={() => setActiveCorrectionCell(null)}
-                    />
-                )
-            }
-        </div >
+        </div>
     );
 };

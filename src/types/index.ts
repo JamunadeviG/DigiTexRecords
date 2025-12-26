@@ -40,7 +40,11 @@ export interface LandDocument {
     ocrData?: {
         text?: string;
         confidence?: number;
-        fields?: Record<string, any>;
+        fields?: Record<string, any> & {
+            pattaNumber?: string;
+            batchNumber?: string;
+            summary?: string;
+        };
     };
     integrityCheck?: {
         hasOriginal: boolean;

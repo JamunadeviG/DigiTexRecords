@@ -42,12 +42,12 @@ class OcrService {
                 text: data.text || "",
                 confidence: data.confidence || 0,
                 fields: {
-                    docNumber: data.structuredData?.docNumber || "",
-                    date: data.structuredData?.date || "",
+                    docNumber: data.structuredData?.registrationNumber || data.structuredData?.docNumber || "",
+                    date: data.structuredData?.registrationDate || data.structuredData?.date || "",
                     surveyNumber: data.structuredData?.surveyNumber || "",
-                    category: data.structuredData?.category || "Sale Deed",
-                    ownerName: "", // EasyOCR might not identify this easily yet
-                    // ... map other fields if needed ...
+                    category: data.structuredData?.documentType || "Sale Deed",
+                    ownerName: data.structuredData?.sellerName || "", // Map seller to owner for generic interface
+                    context: `Buyer: ${data.structuredData?.buyerName || ""}, Amount: ${data.structuredData?.considerationAmount || ""}`
                 },
                 blocks: data.structuredData?.blocks
             };

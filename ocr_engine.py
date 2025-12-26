@@ -1,163 +1,152 @@
 import sys
 import os
 import json
-import easyocr
 import cv2
 import numpy as np
 import warnings
 import fitz  # PyMuPDF
 import argparse
+import re
+from paddleocr import PaddleOCR
 
-# Suppress warnings
 warnings.filterwarnings("ignore")
 
+# ---------- Helpers ----------
+
+def auto_rotate(img):
+    """Detect Tamil text direction + rotate properly"""
+    try:
+        ocr_tmp = PaddleOCR(lang='ta', use_angle_cls=True, show_log=False)
+        res = ocr_tmp.ocr(img, cls=True)
+
+        if res and res[0]:
+            angle = res[0][0][1][2]   # Paddle gives rotation
+            if abs(angle) > 1:
+                (h,w)=img.shape[:2]
+                M=cv2.getRotationMatrix2D((w//2,h//2),-angle,1)
+                img=cv2.warpAffine(img,M,(w,h))
+    except:
+        pass
+    return img
+
+
+def pdf_to_images(path):
+    images=[]
+    doc=fitz.open(path)
+
+    for page in doc:
+        pix = page.get_pixmap(dpi=220)
+        img = np.frombuffer(pix.samples, dtype=np.uint8)
+        img = img.reshape(pix.h, pix.w, 3)
+        images.append(img)
+
+    return images
+
+
 def load_images_from_path(path):
-    """
-    Load images from path. Supports:
-    - Images: JPG, PNG, TIFF, etc. (Returns [img])
-    - PDF: Returns list of images (one per page)
-    """
-    try:
-        lower_path = path.lower()
-        if lower_path.endswith('.pdf'):
-            doc = fitz.open(path)
-            images = []
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                # Render page to image (zoom=2 for better quality)
-                mat = fitz.Matrix(2, 2)
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert to numpy array (RGB)
-                img_data = pix.tobytes("ppm")
-                nparr = np.frombuffer(img_data, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                
-                if img is not None:
-                    images.append(img)
-            return images, None
-        else:
-            # Standard Image
-            img = cv2.imread(path)
-            if img is None:
-                return None, "Failed to load image (unsupported format?)"
-            return [img], None
-    except Exception as e:
-        return None, f"Error loading file: {str(e)}"
+    if path.lower().endswith(".pdf"):
+        return pdf_to_images(path)
+    img=cv2.imread(path)
+    return [img] if img is not None else []
 
-def preprocess_image_array(img):
-    """
-    Apply OpenCV preprocessing to a numpy image array
-    """
-    try:
-        if img is None:
-            return None, "Empty image"
 
-        # 1. Grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def normalize_text(text):
+    text=text.replace("\u200c"," ").strip()
+    return re.sub(r"\s+"," ",text)
 
-        # 2. Resize (Disabled by user request)
-        # height, width = gray.shape
-        # if width < 1000:
-        #    ...
 
-        # 3. Denoise
-        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+# ---------- FIELD EXTRACTION ----------
 
-        return denoised, None
-    except Exception as e:
-        return None, str(e)
+def extract_fields(text):
+    fields={
+        "documentType":"Unknown",
+        "pattaNumber":"",
+        "batchNumber":"",
+        "surveyNumber":"",
+        "ownerName":"",
+        "village":"",
+        "taluk":"",
+        "district":"",
+        "date":"",
+        "summary":""
+    }
+
+    t = normalize_text(text)
+
+    # Tamil + English patterns
+    pattas = [
+        r"(?:பட்டா\s*எண்|Patta\s*No)\s*[:\- ]+(\d+)"
+    ]
+    for p in pattas:
+        m=re.search(p,t,re.I)
+        if m: fields["pattaNumber"]=m.group(1)
+
+    batch=re.search(r"(?:தொகுப்பு\s*வரிசை\s*எண்|Thokuppu)\s*[:\- ]+([\w\/\-\.]+)",t)
+    if batch: fields["batchNumber"]=batch.group(1)
+
+    survey=re.search(r"(?:சர்வே\s*எண்|Survey\s*No)\s*[:\- ]+([\w\/\-\.]+)",t)
+    if survey: fields["surveyNumber"]=survey.group(1)
+
+    owner=re.search(r"(?:உடைமையாளர்(?:ின்)?\s*பெயர்|Owner)\s*[:\- ]+([^\n]+)",text)
+    if owner: fields["ownerName"]=owner.group(1).strip()
+
+    # doc classification
+    if re.search(r"விற்பனை|Sale",t): fields["documentType"]="Sale Deed"
+    elif re.search(r"பட்டா",t): fields["documentType"]="Patta"
+    elif re.search(r"உத்தரவு|Order",t): fields["documentType"]="Government Order"
+
+    # summary
+    parts=[]
+    parts.append(f"Document Type: {fields['documentType']}")
+    if fields["pattaNumber"]: parts.append(f"Patta No: {fields['pattaNumber']}")
+    if fields["surveyNumber"]: parts.append(f"Survey No: {fields['surveyNumber']}")
+    if fields["ownerName"]: parts.append(f"Owner: {fields['ownerName']}")
+    fields["summary"]=" | ".join(parts)
+
+    return fields
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('image_path', help='Path to file')
-    parser.add_argument('--mode', choices=['preprocess', 'ocr', 'full'], default='full')
-    
-    args = parser.parse_args()
-    image_path = args.image_path
-    
-    if not os.path.exists(image_path):
-        print(json.dumps({"status": "error", "message": f"File not found: {image_path}"}))
+    # Get path from Environment Variable
+    image_path = os.environ.get("OCR_IMAGE_PATH")
+
+    if not image_path or not os.path.exists(image_path):
+        print(json.dumps({"status":"error","message":f"File not found or OCR_IMAGE_PATH not set: {image_path}"}))
         sys.exit(1)
 
-    # Set stdout encoding
-    if sys.stdout.encoding != 'utf-8':
-         sys.stdout.reconfigure(encoding='utf-8')
+    # NUCLEAR OPTION: Clear sys.argv completely to prevent PaddleOCR from seeing ANY arguments
+    import sys
+    sys.argv = []
 
-    # Load Images (1 or many)
-    images, error = load_images_from_path(image_path)
-    
-    if images is None:
-        print(json.dumps({"status": "error", "message": error}))
+    images = load_images_from_path(image_path)
+
+    try:
+        ocr = PaddleOCR(lang="ta", use_angle_cls=True, show_log=False)
+
+        all_text=[]
+        for img in images:
+            img = auto_rotate(img)
+            res = ocr.ocr(img, cls=True)
+
+            if res and res[0]:
+                for line in res[0]:
+                    all_text.append(line[1][0])
+
+        full_text="\n".join(all_text)
+        
+        # Write to absolute path if possible, or relative to script dir
+        # Using a fixed filename in the current directory
+        with open("output.txt", "w", encoding="utf-8") as f:
+            f.write(full_text)
+
+        fields = extract_fields(full_text)
+
+        print(json.dumps({
+            "status":"success",
+            "text":full_text,
+            "fields":fields
+        }, ensure_ascii=False))
+        
+    except Exception as e:
+        print(json.dumps({"status": "error", "message": str(e)}))
         sys.exit(1)
-        
-    if len(images) == 0:
-        print(json.dumps({"status": "error", "message": "No images extracted from file"}))
-        sys.exit(1)
-
-    if args.mode == 'preprocess':
-        # For preprocess mode, we typically want a preview. 
-        # For PDF, let's just preprocess and return the FIRST page as the preview image.
-        # Or ideally store all? For dashboard preview, 1st page is sufficient.
-        
-        first_page_img = images[0]
-        processed, error = preprocess_image_array(first_page_img)
-        
-        if processed is not None:
-            base, ext = os.path.splitext(image_path)
-            # Force jpg extension for the preview output
-            output_path = f"{base}_processed.jpg"
-            cv2.imwrite(output_path, processed)
-            
-            print(json.dumps({
-                "status": "success", 
-                "message": f"Preprocessing complete ({len(images)} pages)",
-                "processed_path": output_path,
-                "page_count": len(images)
-            }))
-        else:
-            print(json.dumps({"status": "error", "message": error}))
-            
-    elif args.mode == 'ocr':
-        try:
-            reader = easyocr.Reader(['ta', 'en'], gpu=True)
-            
-            full_text_lines = []
-            all_blocks = []
-            
-            for idx, img in enumerate(images):
-                # Preprocess first
-                processed, _ = preprocess_image_array(img)
-                if processed is None: processed = img # Fallback
-                
-                # Run OCR
-                results = reader.readtext(processed, detail=1, paragraph=False)
-                
-                for (bbox, text, prob) in results:
-                    serialized_bbox = [[int(pt[0]), int(pt[1])] for pt in bbox]
-                    all_blocks.append({
-                        "text": text,
-                        "confidence": float(prob),
-                        "box": serialized_bbox,
-                        "page": idx + 1
-                    })
-                    full_text_lines.append(text)
-                
-                # Add page break marker if multiple pages
-                if len(images) > 1:
-                    full_text_lines.append(f"\n--- Page {idx+1} ---\n")
-
-            print(json.dumps({
-                "status": "success",
-                "full_text": "\n".join(full_text_lines),
-                "blocks": all_blocks,
-                "confidence": 0.95
-            }, ensure_ascii=False))
-            
-        except Exception as e:
-            print(json.dumps({"status": "error", "message": str(e)}))
-            
-    else:
-        # Full Legacy Mode (Just first page or single image for backward compat if needed)
-        # But for this task, the app uses 'preprocess' and 'ocr' modes now.
-        print(json.dumps({"status": "error", "message": "Please use --mode preprocess or --mode ocr"}))
